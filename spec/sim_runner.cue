@@ -28,6 +28,7 @@ project: contexts: SimRunner: aggregates: {
 			"an ephemeral runner executes exactly one job and then terminates",
 			"every log chunk carries a strictly increasing seq per (job, step); on reconnect the runner re-sends the last unacknowledged chunk (relying on server idempotency)",
 			"on connection failure or 5xx the runner rotates to the next gateway URL and resumes with the same token — it never restarts the job",
+			"job-message steps are executed by kind: run (simulated output), upload_artifact (artifacts create/upload/finalize flow against the gateway), cache_restore and cache_save (cache lookup/reserve-upload-commit flow) — all through the gateway's HTTP APIs with the job-scoped token, and a cache_restore miss never fails the step",
 		]
 	}
 }
