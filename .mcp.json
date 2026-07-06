@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "crest-spec": {
+      "command": "/Users/crestenstclair/workspace/crest-spec/bin/crest-spec",
+      "env": {
+        "CREST_SPEC_SPEC_DIR": "./spec",
+        "CREST_SPEC_GENERATE_MODEL": "claude-sonnet-5"
+      }
+    }
+  }
+}
