@@ -1,0 +1,25 @@
+name: Artifact and Cache
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/cache/restore@v4
+        id: cache_restore
+        with:
+          path: _build
+          key: build-${{ github.sha }}
+          restore-keys: |
+            build-
+      - run: make build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: _build/output
+      - uses: actions/cache/save@v4
+        with:
+          path: _build
+          key: build-${{ github.sha }}

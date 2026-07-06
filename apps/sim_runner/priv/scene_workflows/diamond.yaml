@@ -1,0 +1,25 @@
+name: Diamond Pipeline
+on:
+  push:
+    branches: [main]
+jobs:
+  setup:
+    runs-on: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: make setup
+  unit_tests:
+    needs: setup
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: make unit
+  integration_tests:
+    needs: setup
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: make integration
+  release:
+    needs: [unit_tests, integration_tests]
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: make release

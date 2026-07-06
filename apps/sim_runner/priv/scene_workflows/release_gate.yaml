@@ -1,0 +1,16 @@
+name: Release Gate
+on:
+  push:
+    branches: [main]
+jobs:
+  build:
+    runs-on: [ubuntu-latest]
+    steps:
+      - uses: actions/checkout@v4
+      - run: make build
+  deploy:
+    needs: build
+    if: ${{ github.ref == 'refs/heads/release' }}
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: make deploy
