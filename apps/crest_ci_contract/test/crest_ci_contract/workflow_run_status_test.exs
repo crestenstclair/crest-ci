@@ -186,6 +186,63 @@ defmodule CrestCiContract.WorkflowRunStatusTest do
     end
   end
 
+  describe "put_plan/2 and mark_plan_failed/2" do
+    test "put_plan/2 records a plan without touching jobs or phase" do
+      status = WorkflowRunStatus.new(%{"build" => job(:queued)})
+      {:ok, plan_job} = CrestCiContract.PlanJob.new(%{key: "build"})
+
+      updated = WorkflowRunStatus.put_plan(status, [plan_job])
+
+      assert updated.plan == [plan_job]
+      assert updated.jobs == status.jobs
+      assert updated.phase == status.phase
+    end
+
+    test "mark_plan_failed/2 moves a non-terminal status to :failed and records the reason" do
+      status = WorkflowRunStatus.new(%{})
+
+      updated = WorkflowRunStatus.mark_plan_failed(status, "boom")
+
+      assert updated.phase == :failed
+      assert updated.plan_error == "boom"
+    end
+
+    test "mark_plan_failed/2 never moves an already-terminal status off its terminal phase" do
+      status = WorkflowRunStatus.new(%{"build" => job(:succeeded)})
+      assert status.phase == :succeeded
+
+      updated = WorkflowRunStatus.mark_plan_failed(status, "boom")
+
+      assert updated.phase == :succeeded
+      assert updated.plan_error == "boom"
+    end
+
+    test "to_wire omits plan/planError when at their defaults (byte-identical to before these fields existed)" do
+      status = WorkflowRunStatus.new(%{"build" => job(:running)})
+
+      assert WorkflowRunStatus.to_wire(status) == %{
+               "jobs" => %{"build" => JobStatus.to_wire(job(:running))},
+               "phase" => "Running"
+             }
+    end
+
+    test "to_wire/from_wire round-trips a status carrying a derived plan and a recorded plan error" do
+      {:ok, plan_job} = CrestCiContract.PlanJob.new(%{key: "build"})
+
+      status =
+        WorkflowRunStatus.new(%{})
+        |> WorkflowRunStatus.put_plan([plan_job])
+        |> WorkflowRunStatus.mark_plan_failed("boom")
+
+      wire = WorkflowRunStatus.to_wire(status)
+      assert wire["plan"] == [CrestCiContract.PlanJob.to_wire(plan_job)]
+      assert wire["planError"] == "boom"
+
+      assert {:ok, roundtripped} = WorkflowRunStatus.from_wire(wire)
+      assert roundtripped == status
+    end
+  end
+
   describe "Jason.Encoder" do
     test "Jason.encode!/1 serializes to the camelCase wire shape" do
       status = WorkflowRunStatus.new(%{"build" => job(:succeeded)})

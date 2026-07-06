@@ -33,6 +33,7 @@ defmodule CrestCiController.MixProject do
     [
       {:req, "~> 0.5"},
       {:jason, "~> 1.4"},
+      {:yaml_elixir, "~> 2.11"},
       {:crest_ci_contract, in_umbrella: true},
       {:stream_data, "~> 1.1", only: [:test, :dev]},
       {:mock_k8s, in_umbrella: true, only: :test},

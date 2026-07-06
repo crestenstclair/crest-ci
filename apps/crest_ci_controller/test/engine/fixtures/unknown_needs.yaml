@@ -1,0 +1,12 @@
+name: UnknownNeeds
+on: push
+jobs:
+  build:
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: make build
+  test:
+    needs: build_missing
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: make test

@@ -1,4 +1,4 @@
-.PHONY: setup fmt check test conformance chaos props results demo-e2e demo-results
+.PHONY: setup fmt check test conformance chaos props results engine demo-e2e demo-results demo-engine
 
 .DEFAULT_GOAL := test
 
@@ -26,8 +26,14 @@ props:
 results:
 	cd apps/crest_ci_gateway && mix test test/results
 
+engine:
+	cd apps/crest_ci_controller && mix test test/engine
+
 demo-e2e:
 	mix crest_ci.demo_e2e
 
 demo-results:
 	mix crest_ci.demo_results
+
+demo-engine:
+	mix crest_ci.demo_engine

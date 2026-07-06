@@ -23,19 +23,32 @@ defmodule CrestCiContract.WorkflowRunStatus do
   Serializes to/from the Kubernetes JSON wire shape (camelCase keys) via
   `to_wire/1` / `from_wire/1`, and via `Jason.Encoder` for direct
   `Jason.encode!/1` calls.
+
+  `plan` and `plan_error` carry the *engine*-derived job DAG for a
+  `workflowYaml`-driven run (see `CrestCiController.PlanFromDefinition`):
+  `plan` is populated exactly once, via `put_plan/2`, the first time the
+  engine successfully expands such a run's `workflowYaml`; `plan_error`
+  is populated via `mark_plan_failed/2` when it does not. A hand-planned
+  run (whose `WorkflowRunSpec.plan` is already non-empty) never touches
+  either field — both stay at their defaults (`[]` / `""`). Neither field
+  is ever emitted on the wire when still at its default, so a status that
+  never went through the engine path round-trips byte-identically to how
+  it did before these fields existed.
   """
 
-  alias CrestCiContract.{JobKey, JobStatus, WorkflowRunPhase}
+  alias CrestCiContract.{JobKey, JobStatus, PlanJob, WorkflowRunPhase}
 
   @type phase :: WorkflowRunPhase.t()
 
   @type t :: %__MODULE__{
           jobs: %{optional(JobKey.t()) => JobStatus.t()},
-          phase: phase()
+          phase: phase(),
+          plan: [PlanJob.t()],
+          plan_error: String.t()
         }
 
   @enforce_keys [:jobs, :phase]
-  defstruct jobs: %{}, phase: :pending
+  defstruct jobs: %{}, phase: :pending, plan: [], plan_error: ""
 
   @doc "The closed set of legal `phase` values, delegating to `WorkflowRunPhase.values/0`."
   @spec phases() :: [phase()]
@@ -71,6 +84,43 @@ defmodule CrestCiContract.WorkflowRunStatus do
       end
 
     %{status | jobs: jobs, phase: new_phase}
+  end
+
+  @doc """
+  Records the job DAG an engine expansion produced for a `workflowYaml`
+  -driven run — see `CrestCiController.PlanFromDefinition`. Called at
+  most once per run, the first time the engine successfully expands its
+  `workflowYaml` (a hand-planned run's `WorkflowRunSpec.plan` is already
+  non-empty and never reaches this function). Touches only `plan` —
+  `jobs` and `phase` are untouched, so a caller can persist a freshly
+  derived plan independently of any job-status bookkeeping.
+  """
+  @spec put_plan(t(), [PlanJob.t()]) :: t()
+  def put_plan(%__MODULE__{} = status, plan) when is_list(plan) do
+    %{status | plan: plan}
+  end
+
+  @doc """
+  Marks a run Failed with a structured `PlanError` recorded in
+  `plan_error`, for a `workflowYaml`-driven run whose engine expansion
+  failed (an unknown `needs` target, a `needs` cycle, or any other
+  `CrestCiController.Engine.Planner` error). Gated by the same
+  terminal-phase absorption rule as `update_jobs/2`
+  (`CrestCiContract.WorkflowRunPhase.transition_allowed?/2`): a run
+  already in a terminal phase never has its phase forced back to Failed
+  by a later plan-error observation.
+  """
+  @spec mark_plan_failed(t(), String.t()) :: t()
+  def mark_plan_failed(%__MODULE__{phase: current_phase} = status, reason)
+      when is_binary(reason) do
+    new_phase =
+      if WorkflowRunPhase.transition_allowed?(current_phase, :failed) do
+        :failed
+      else
+        current_phase
+      end
+
+    %{status | phase: new_phase, plan_error: reason}
   end
 
   @doc """
@@ -122,15 +172,25 @@ defmodule CrestCiContract.WorkflowRunStatus do
           {:ok, t()}
           | {:error, :invalid_workflow_run_phase}
           | {:error, {:invalid_job_phase, term(), term()}}
+          | {:error, {:invalid_plan, term()}}
   def from_wire(%{} = wire) do
     with {:ok, jobs} <- decode_jobs(Map.get(wire, "jobs", %{})),
+         {:ok, plan} <- decode_plan_wire(Map.get(wire, "plan", [])),
          {:ok, wire_phase} <- WorkflowRunPhase.from_wire(Map.get(wire, "phase", "Pending")) do
       phase = if WorkflowRunPhase.terminal?(wire_phase), do: wire_phase, else: derive_phase(jobs)
-      {:ok, %__MODULE__{jobs: jobs, phase: phase}}
+      plan_error = Map.get(wire, "planError", "")
+      {:ok, %__MODULE__{jobs: jobs, phase: phase, plan: plan, plan_error: plan_error}}
     end
   end
 
-  @doc "Encodes a `WorkflowRunStatus` into its Kubernetes JSON wire shape (camelCase keys)."
+  @doc """
+  Encodes a `WorkflowRunStatus` into its Kubernetes JSON wire shape
+  (camelCase keys). `"plan"` and `"planError"` are only emitted when
+  non-default (a non-empty `plan` / a non-empty `plan_error`) — a status
+  that never went through the engine path (see `put_plan/2` /
+  `mark_plan_failed/2`) encodes exactly as it did before these fields
+  existed.
+  """
   @spec to_wire(t()) :: map()
   def to_wire(%__MODULE__{} = status) do
     %{
@@ -138,7 +198,34 @@ defmodule CrestCiContract.WorkflowRunStatus do
         Map.new(status.jobs, fn {key, job_status} -> {key, JobStatus.to_wire(job_status)} end),
       "phase" => WorkflowRunPhase.to_wire(status.phase)
     }
+    |> maybe_put_plan(status.plan)
+    |> maybe_put_plan_error(status.plan_error)
   end
+
+  @spec maybe_put_plan(map(), [PlanJob.t()]) :: map()
+  defp maybe_put_plan(wire, []), do: wire
+  defp maybe_put_plan(wire, plan), do: Map.put(wire, "plan", Enum.map(plan, &PlanJob.to_wire/1))
+
+  @spec maybe_put_plan_error(map(), String.t()) :: map()
+  defp maybe_put_plan_error(wire, ""), do: wire
+  defp maybe_put_plan_error(wire, plan_error), do: Map.put(wire, "planError", plan_error)
+
+  @spec decode_plan_wire(term()) :: {:ok, [PlanJob.t()]} | {:error, {:invalid_plan, term()}}
+  defp decode_plan_wire(plan) when is_list(plan) do
+    plan
+    |> Enum.reduce_while({:ok, []}, fn job_wire, {:ok, acc} ->
+      case PlanJob.from_wire(job_wire) do
+        {:ok, job} -> {:cont, {:ok, [job | acc]}}
+        {:error, reason} -> {:halt, {:error, {:invalid_plan, reason}}}
+      end
+    end)
+    |> case do
+      {:ok, jobs} -> {:ok, Enum.reverse(jobs)}
+      {:error, _reason} = error -> error
+    end
+  end
+
+  defp decode_plan_wire(other), do: {:error, {:invalid_plan, other}}
 
   @spec decode_jobs(term()) ::
           {:ok, %{optional(JobKey.t()) => JobStatus.t()}}

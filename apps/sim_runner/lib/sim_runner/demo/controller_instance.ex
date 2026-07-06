@@ -55,6 +55,21 @@ defmodule SimRunner.Demo.ControllerInstance do
   @lease_sweeper Module.concat([CrestCiController, LeaseSweeper])
   @needs_resolver Module.concat([CrestCiController, NeedsResolver])
 
+  # Engine C1 tier (`domainService.Engine.WorkflowParser` /
+  # `.GithubContext` / `.Planner`) — same `Module.concat/1` + `apply/3`
+  # dodge as the trio above, for the same reason: a WorkflowRun whose
+  # spec carries `workflowYaml` (and an empty hand-built `plan`) needs
+  # this harness to expand that YAML into a `[PlanJob]` itself (the
+  # controller-side `applicationService.Controller.PlanFromDefinition`
+  # hook is this session's later-wave counterpart; until it lands, or in
+  # this in-BEAM harness which never depends on `crest_ci_controller` at
+  # compile time regardless), by calling the SAME pure engine pipeline it
+  # will. A run that already carries a hand-built `plan` (every other
+  # asset in this suite) never touches this path — see `effective_plan/1`.
+  @workflow_parser Module.concat([CrestCiController, Engine, WorkflowParser])
+  @github_context Module.concat([CrestCiController, Engine, GithubContext])
+  @planner Module.concat([CrestCiController, Engine, Planner])
+
   @workflow_run_gvk {"ci.crest.dev", "v1alpha1", "WorkflowRun"}
   @runner_job_gvk {"ci.crest.dev", "v1alpha1", "RunnerJob"}
   @pod_gvk {"core", "v1", "Pod"}
@@ -139,16 +154,61 @@ defmodule SimRunner.Demo.ControllerInstance do
 
   defp reconcile_once(state) do
     with {:ok, run_object} <- kube_get(state, @workflow_run_gvk, state.run_name),
-         {:ok, spec} <- WorkflowRunSpec.from_wire(Map.get(run_object, "spec", %{})),
+         {:ok, plan} <- effective_plan(run_object),
          {:ok, status} <- WorkflowRunStatus.from_wire(Map.get(run_object, "status", %{})) do
-      proposal = apply(@needs_resolver, :resolve, [spec.plan, status.jobs])
-      Enum.each(proposal.runnable_job_keys, &create_child(state, spec.plan, &1))
+      proposal = apply(@needs_resolver, :resolve, [plan, status.jobs])
+      Enum.each(proposal.runnable_job_keys, &create_child(state, plan, &1))
       skip_jobs(state, proposal.skip_job_keys)
       :ok
     else
       {:error, reason} ->
         Logger.warning("ControllerInstance: reconcile pass skipped: #{inspect(reason)}")
         :ok
+    end
+  end
+
+  # The run's effective job DAG: a hand-built `spec.plan` (every asset
+  # before this one) passes straight through unchanged — "hand-planned
+  # runs continue to work unchanged". Only when `plan` is empty AND the
+  # spec carries non-empty `workflowYaml` does this harness expand the
+  # YAML into a plan itself, via the same pure Engine pipeline
+  # `domainService.Engine.Planner` composes
+  # (`WorkflowParser.parse/1` -> `GithubContext.new/1` -> `Planner.plan/2`).
+  # A `workflowYaml`-less, `plan`-less run (never submitted by any asset
+  # in this suite) is simply an empty plan, matching prior behavior.
+  @spec effective_plan(map()) :: {:ok, [CrestCiContract.PlanJob.t()]} | {:error, term()}
+  defp effective_plan(run_object) do
+    spec_wire = Map.get(run_object, "spec", %{})
+
+    with {:ok, spec} <- WorkflowRunSpec.from_wire(spec_wire) do
+      workflow_yaml = Map.get(spec_wire, "workflowYaml", "")
+
+      case {spec.plan, workflow_yaml} do
+        {[], yaml} when is_binary(yaml) and yaml != "" -> plan_from_definition(yaml, spec)
+        {plan, _yaml} -> {:ok, plan}
+      end
+    end
+  end
+
+  @spec plan_from_definition(String.t(), WorkflowRunSpec.t()) ::
+          {:ok, [CrestCiContract.PlanJob.t()]} | {:error, term()}
+  defp plan_from_definition(workflow_yaml, %WorkflowRunSpec{} = spec) do
+    with {:ok, definition, _warnings} <- apply(@workflow_parser, :parse, [workflow_yaml]),
+         {:ok, github_context} <-
+           apply(@github_context, :new, [
+             %{
+               actor: "",
+               event: %{},
+               event_name: "push",
+               ref: spec.ref,
+               repository: spec.repo,
+               sha: spec.sha
+             }
+           ]),
+         {:ok, plan} <- apply(@planner, :plan, [definition, github_context]) do
+      {:ok, plan}
+    else
+      {:error, reason} -> {:error, {:plan_from_definition_failed, reason}}
     end
   end
 

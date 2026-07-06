@@ -34,6 +34,18 @@ defmodule CrestCiController.RunReconciler do
   hardcoded here, so this reconciler is substitutable across the real
   adapter, the mock-k8s HTTP adapter, or any test double without a single
   line changing (Dependency Inversion).
+
+  Before ever proposing a job-creation command, `reconcile_run/2` resolves
+  the run's effective plan via `CrestCiController.PlanFromDefinition.resolve_plan/3`:
+  a hand-built `WorkflowRunSpec.plan` passes straight through unchanged; a
+  `workflowYaml`-driven run with no hand plan has the pure Engine pipeline
+  run against it exactly once, and the resulting plan (or a structured
+  `PlanError`) is persisted into the run's own status — via a CAS'd
+  `patch_status`, the same idempotent-retry discipline every other status
+  write in this module already follows — strictly before any
+  `{:create_runner_job, _}` / `{:create_pod, _}` command is ever proposed
+  from it. A `PlanError` marks the run Failed with the error recorded and
+  proposes no job creation at all.
   """
 
   use GenServer
@@ -49,7 +61,7 @@ defmodule CrestCiController.RunReconciler do
     WorkflowRunStatus
   }
 
-  alias CrestCiController.ReconcilePlanner
+  alias CrestCiController.{PlanFromDefinition, ReconcilePlanner}
 
   @typedoc "`{adapter_module, adapter_conn}` — see moduledoc."
   @type kube_conn :: {module(), term()}
@@ -171,30 +183,117 @@ defmodule CrestCiController.RunReconciler do
 
   defp reconcile_run(state, run_object) do
     name = get_in(run_object, ["metadata", "name"])
+    spec_wire = Map.get(run_object, "spec", %{})
 
-    with {:ok, spec} <- WorkflowRunSpec.from_wire(Map.get(run_object, "spec", %{})),
+    with {:ok, spec} <- WorkflowRunSpec.from_wire(spec_wire),
          {:ok, status} <- WorkflowRunStatus.from_wire(Map.get(run_object, "status", %{})) do
       if WorkflowRunPhase.terminal?(status.phase) do
         :ok
       else
-        {job_statuses, run_object, status} =
-          absorb_and_persist(state, name, run_object, status)
+        case plan_and_persist(state, name, run_object, status, spec, spec_wire) do
+          {:ok, plan, run_object, status} ->
+            {job_statuses, run_object, status} =
+              absorb_and_persist(state, name, run_object, status)
 
-        workflow_run = %{
-          ulid: name,
-          run_ref: name,
-          plan: spec.plan,
-          job_statuses: job_statuses,
-          phase: status.phase,
-          resource_version: get_in(run_object, ["metadata", "resourceVersion"]),
-          namespace: state.namespace
-        }
+            workflow_run = %{
+              ulid: name,
+              run_ref: name,
+              plan: plan,
+              job_statuses: job_statuses,
+              phase: status.phase,
+              resource_version: get_in(run_object, ["metadata", "resourceVersion"]),
+              namespace: state.namespace
+            }
 
-        reconcile(state.kube_conn, workflow_run, existing_runner_job_names(state, name))
+            reconcile(state.kube_conn, workflow_run, existing_runner_job_names(state, name))
+
+          {:error, _reason} ->
+            :ok
+        end
       end
     else
       {:error, reason} ->
         Logger.warning("RunReconciler: failed to decode WorkflowRun #{name}: #{inspect(reason)}")
+    end
+  end
+
+  # Resolves this run's effective job DAG via
+  # `CrestCiController.PlanFromDefinition.resolve_plan/3`. A hand-planned
+  # or already-planned run's resolution needs no persistence — the plan
+  # it returns is already the one currently on the run (spec- or
+  # status-side). A freshly-derived plan (the engine ran THIS tick) is
+  # persisted into the run's status before this tick ever hands it to
+  # `reconcile/3` for job creation. A `PlanError` is persisted as a
+  # Failed phase + recorded error instead, and this tick proposes no job
+  # creation at all.
+  defp plan_and_persist(state, run_name, run_object, status, spec, spec_wire) do
+    case PlanFromDefinition.resolve_plan(spec, spec_wire, status) do
+      {:ok, :freshly_planned, plan} ->
+        persist_plan(state, run_name, run_object, status, plan)
+
+      {:ok, _origin, plan} ->
+        {:ok, plan, run_object, status}
+
+      {:error, reason} ->
+        persist_plan_error(state, run_name, run_object, status, reason)
+        {:error, reason}
+    end
+  end
+
+  defp persist_plan(state, run_name, run_object, status, plan) do
+    new_status = WorkflowRunStatus.put_plan(status, plan)
+    resource_version = get_in(run_object, ["metadata", "resourceVersion"])
+
+    case kube_patch_status(
+           state,
+           @workflow_run_gvk,
+           run_name,
+           WorkflowRunStatus.to_wire(new_status),
+           resource_version
+         ) do
+      {:ok, updated_object} ->
+        {:ok, plan, updated_object, new_status}
+
+      {:error, :conflict} ->
+        # Another writer moved this run first; this tick still proceeds
+        # with the freshly-derived plan in memory (Planner is pure, so
+        # re-deriving it again next tick from the same workflowYaml is
+        # harmless) rather than delaying job creation a whole extra tick.
+        {:ok, plan, run_object, status}
+
+      {:error, reason} ->
+        Logger.warning(
+          "RunReconciler: failed to persist derived plan for #{run_name}: #{inspect(reason)}"
+        )
+
+        {:ok, plan, run_object, status}
+    end
+  end
+
+  defp persist_plan_error(state, run_name, run_object, status, reason) do
+    new_status = WorkflowRunStatus.mark_plan_failed(status, inspect(reason))
+    resource_version = get_in(run_object, ["metadata", "resourceVersion"])
+
+    case kube_patch_status(
+           state,
+           @workflow_run_gvk,
+           run_name,
+           WorkflowRunStatus.to_wire(new_status),
+           resource_version
+         ) do
+      {:ok, _updated_object} ->
+        :ok
+
+      {:error, :conflict} ->
+        # Another writer moved this run first; the next tick re-reads
+        # fresh state and re-derives (and, if it still fails, re-fails)
+        # from there.
+        :ok
+
+      {:error, patch_reason} ->
+        Logger.warning(
+          "RunReconciler: failed to persist plan error for #{run_name}: #{inspect(patch_reason)}"
+        )
     end
   end
 
@@ -344,7 +443,22 @@ defmodule CrestCiController.RunReconciler do
     name = Map.fetch!(workflow_run, :ulid)
     namespace = namespace_of(workflow_run)
     resource_version = Map.get(workflow_run, :resource_version)
-    status_wire = WorkflowRunStatus.to_wire(%WorkflowRunStatus{jobs: cmd.jobs, phase: cmd.phase})
+
+    # `cmd` (from `ReconcilePlanner.plan/2`) only ever carries `jobs`/`phase`
+    # — it has no notion of a `workflowYaml`-derived `plan`. Building the
+    # patch wire from `cmd` alone would silently wipe out whatever
+    # `PlanFromDefinition` already persisted into this run's status earlier
+    # THIS SAME tick (a `patch_status` replaces the whole status
+    # subresource, it does not merge), so `:plan` — threaded onto
+    # `workflow_run` the same way `:resource_version` and `:namespace`
+    # already are — is carried through here explicitly instead.
+    status_wire =
+      WorkflowRunStatus.to_wire(%WorkflowRunStatus{
+        jobs: cmd.jobs,
+        phase: cmd.phase,
+        plan: Map.get(workflow_run, :plan, []),
+        plan_error: Map.get(workflow_run, :plan_error, "")
+      })
 
     case kube_patch_status(
            kube_conn,

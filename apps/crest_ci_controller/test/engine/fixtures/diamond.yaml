@@ -1,0 +1,22 @@
+name: Diamond
+on: push
+jobs:
+  setup:
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: make setup
+  integration_tests:
+    needs: setup
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: make integration
+  unit_tests:
+    needs: setup
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: make unit
+  release:
+    needs: [unit_tests, integration_tests]
+    runs-on: [ubuntu-latest]
+    steps:
+      - run: make release

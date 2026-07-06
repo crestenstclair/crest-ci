@@ -1,0 +1,12 @@
+name: UnknownKeys
+on: push
+concurrency:
+  group: ci-${{ github.ref }}
+permissions:
+  contents: read
+jobs:
+  build:
+    runs-on: [ubuntu-latest]
+    continue-on-error: true
+    steps:
+      - run: make build

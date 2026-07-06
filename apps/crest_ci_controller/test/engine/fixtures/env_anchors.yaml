@@ -1,0 +1,18 @@
+name: EnvMerge
+on: push
+env:
+  GLOBAL: workflow-only
+  SHARED: workflow-shared
+jobs:
+  alpha: &job_defaults
+    runs-on: [ubuntu-latest]
+    env:
+      SHARED: alpha-shared
+    if: ${{ env.SHARED == 'alpha-shared' }}
+    steps:
+      - run: echo alpha
+  beta:
+    <<: *job_defaults
+    if: ${{ env.GLOBAL == 'workflow-only' }}
+    steps:
+      - run: echo beta
