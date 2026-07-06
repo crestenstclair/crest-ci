@@ -11,7 +11,7 @@ project: assets: UmbrellaManifest: {
 		"Elixir umbrella project named :crest_ci, elixir '~> 1.20', apps_path: 'apps'. Five apps:",
 		"apps/crest_ci_contract — the shared CRD struct/schema package. Deps: {:jason, \"~> 1.4\"}.",
 		"apps/mock_k8s — in-memory Kubernetes API server. Deps: {:plug, \"~> 1.16\"}, {:bandit, \"~> 1.5\"}, {:jason, \"~> 1.4\"}, {:crest_ci_contract, in_umbrella: true}.",
-		"apps/crest_ci_controller — leader-elected control plane. Deps: {:req, \"~> 0.5\"}, {:jason, \"~> 1.4\"}, {:crest_ci_contract, in_umbrella: true}, {:stream_data, \"~> 1.1\", only: [:test, :dev]}. Test env also depends on {:mock_k8s, in_umbrella: true} and {:crest_ci_gateway, in_umbrella: true} and {:sim_runner, in_umbrella: true} so cross-component suites (chaos, e2e) can boot the whole system.",
+		"apps/crest_ci_controller — leader-elected control plane. Deps: {:req, \"~> 0.5\"}, {:jason, \"~> 1.4\"}, {:yaml_elixir, \"~> 2.11\"}, {:crest_ci_contract, in_umbrella: true}, {:stream_data, \"~> 1.1\", only: [:test, :dev]}. Test env also depends on {:mock_k8s, in_umbrella: true} and {:crest_ci_gateway, in_umbrella: true} and {:sim_runner, in_umbrella: true} so cross-component suites (chaos, e2e) can boot the whole system.",
 		"apps/crest_ci_gateway — active-active runner gateway. Deps: {:plug, \"~> 1.16\"}, {:bandit, \"~> 1.5\"}, {:req, \"~> 0.5\"}, {:jason, \"~> 1.4\"}, {:crest_ci_contract, in_umbrella: true}, {:stream_data, \"~> 1.1\", only: [:test, :dev]}, and test-only in_umbrella deps on mock_k8s and sim_runner.",
 		"apps/sim_runner — protocol-real simulated runner client. Deps: {:req, \"~> 0.5\"}, {:jason, \"~> 1.4\"}, {:crest_ci_contract, in_umbrella: true}.",
 		"No app starts network listeners automatically from config — mock_k8s, controller, and gateway expose start_link/start functions that tests and the demo task call explicitly with ports/options. Each app's Application module may supervise internal registries but must not bind ports at boot.",
@@ -28,7 +28,7 @@ project: assets: ProjectMakefile: {
 	uses: ["asset.UmbrellaManifest"]
 	prompts: [
 		"File path: Makefile",
-		"Targets: `setup` (mix deps.get), `fmt` (mix format), `check` (mix compile --warnings-as-errors), `test` (mix test), `conformance` (cd apps/mock_k8s && mix test), `chaos` (cd apps/crest_ci_controller && mix test --only chaos), `props` (cd apps/crest_ci_gateway && mix test --only property), `results` (cd apps/crest_ci_gateway && mix test test/results), `demo-e2e` (mix crest_ci.demo_e2e — boots the full in-BEAM system and prints measured results), `demo-results` (mix crest_ci.demo_results — two runs with artifacts + cache across the full stack).",
+		"Targets: `setup` (mix deps.get), `fmt` (mix format), `check` (mix compile --warnings-as-errors), `test` (mix test), `conformance` (cd apps/mock_k8s && mix test), `chaos` (cd apps/crest_ci_controller && mix test --only chaos), `props` (cd apps/crest_ci_gateway && mix test --only property), `results` (cd apps/crest_ci_gateway && mix test test/results), `engine` (cd apps/crest_ci_controller && mix test test/engine), `demo-e2e` (mix crest_ci.demo_e2e — boots the full in-BEAM system and prints measured results), `demo-results` (mix crest_ci.demo_results — two runs with artifacts + cache across the full stack), `demo-engine` (mix crest_ci.demo_engine — a real workflow YAML planned by the engine and executed end-to-end).",
 		"Every target is phony; default target is `test`.",
 	]
 	validations: [
