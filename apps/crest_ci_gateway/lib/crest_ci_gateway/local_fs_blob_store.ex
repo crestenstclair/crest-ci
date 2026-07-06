@@ -11,6 +11,13 @@ defmodule CrestCiGateway.LocalFsBlobStore do
   adapter is safely shared across replicas that see the same filesystem and
   safely reconstructed after a crash (nothing lives in memory that isn't
   re-derivable from the files themselves).
+
+  `delete_job/3` removes a job's entire chunk directory — used by
+  `applicationService.Results.ArchiveOnComplete` once a job's chunks have
+  been durably compacted into a `CrestCiGateway.LogArchive`, so a job's
+  live chunks never linger once an archive vouches for their content.
+  Removing an already-absent (or already-deleted) job directory is a
+  no-op success, matching this port's idempotent-everywhere contract.
   """
 
   @behaviour CrestCiGateway.BlobStore
@@ -60,6 +67,35 @@ defmodule CrestCiGateway.LocalFsBlobStore do
     end
   end
 
+  @impl CrestCiGateway.BlobStore
+  @spec list_chunks(t(), String.t(), String.t()) ::
+          {:ok, [{String.t(), non_neg_integer(), binary()}]} | {:error, term()}
+  def list_chunks(%__MODULE__{root: root}, run, job) do
+    job_dir = Path.join([root, run, job])
+
+    case File.ls(job_dir) do
+      {:ok, steps} ->
+        {:ok, list_ordered(job_dir, steps)}
+
+      {:error, :enoent} ->
+        {:ok, []}
+
+      {:error, reason} ->
+        {:error, reason}
+    end
+  end
+
+  @impl CrestCiGateway.BlobStore
+  @spec delete_job(t(), String.t(), String.t()) :: :ok | {:error, term()}
+  def delete_job(%__MODULE__{root: root}, run, job) do
+    job_dir = Path.join([root, run, job])
+
+    case File.rm_rf(job_dir) do
+      {:ok, _paths} -> :ok
+      {:error, reason, _file} -> {:error, reason}
+    end
+  end
+
   # -- internal --------------------------------------------------------
 
   defp write_if_absent(path, content) do
@@ -102,6 +138,33 @@ defmodule CrestCiGateway.LocalFsBlobStore do
           case File.read(Path.join(step_dir, "#{seq}.chunk")) do
             {:ok, data} -> data
             {:error, _reason} -> ""
+          end
+        end)
+
+      {:error, _reason} ->
+        []
+    end
+  end
+
+  defp list_ordered(job_dir, steps) do
+    steps
+    |> Enum.sort()
+    |> Enum.flat_map(fn step -> list_step_chunks(job_dir, step) end)
+  end
+
+  defp list_step_chunks(job_dir, step) do
+    step_dir = Path.join(job_dir, step)
+
+    case File.ls(step_dir) do
+      {:ok, files} ->
+        files
+        |> Enum.map(&parse_seq/1)
+        |> Enum.reject(&is_nil/1)
+        |> Enum.sort()
+        |> Enum.map(fn seq ->
+          case File.read(Path.join(step_dir, "#{seq}.chunk")) do
+            {:ok, data} -> {step, seq, data}
+            {:error, _reason} -> {step, seq, ""}
           end
         end)
 

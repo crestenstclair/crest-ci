@@ -23,6 +23,17 @@ defmodule CrestCiGateway.RunnerProtocolHttp do
     function value (or opaque connection term) — no field aliases a
     concrete module, so a test can supply stub functions with zero coupling
     to real implementations.
+
+    `archive_on_complete` is the one optional collaborator: it is the
+    `applicationService.Results.ArchiveOnComplete` completion hook,
+    wired the same way every other capability here is (a bare function
+    value, never a hard-coded module reference), but left `nil` by
+    default so existing callers/tests that predate log archiving keep
+    working unchanged (Open/Closed — this capability was added without
+    modifying any caller that doesn't opt into it). When present, it is
+    invoked from the `/jobs/:name/complete` route immediately after the
+    completion result is durably projected onto the job's status; see
+    `CrestCiGateway.GatewayHttpServer.handle_complete/3`.
     """
 
     @enforce_keys [
@@ -47,6 +58,7 @@ defmodule CrestCiGateway.RunnerProtocolHttp do
               poll: nil,
               ingest_chunk: nil,
               project_status: nil,
+              archive_on_complete: nil,
               long_poll_deadline_ms: 30_000,
               token_ttl_ms: 3_600_000
 
@@ -70,6 +82,10 @@ defmodule CrestCiGateway.RunnerProtocolHttp do
                              :ok | {:error, term()}),
             project_status: (term(), String.t(), String.t(), map() ->
                                {:ok, term()} | {:error, term()}),
+            archive_on_complete:
+              (term(), String.t(), String.t() ->
+                 {:ok, term()} | {:error, term()})
+              | nil,
             long_poll_deadline_ms: non_neg_integer(),
             token_ttl_ms: non_neg_integer()
           }

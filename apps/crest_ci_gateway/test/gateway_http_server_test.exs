@@ -370,6 +370,137 @@ defmodule CrestCiGateway.GatewayHttpServerTest do
     assert resp.status == 500
   end
 
+  # -- POST /jobs/:name/complete -> applicationService.Results.ArchiveOnComplete ---
+  #
+  # `archive_on_complete` is the gateway's job-completion hook for log
+  # archiving: `base_deps/1` leaves it `nil` (never configured), which is
+  # exactly what every test above this section exercises -- completion
+  # succeeds with no archiving collaborator touched at all. These tests
+  # cover the opt-in path.
+
+  test "POST /jobs/:name/complete with no archive_on_complete configured still succeeds (200)" do
+    deps = base_deps()
+    refute deps.archive_on_complete
+    token = valid_token(deps)
+
+    resp =
+      conn(
+        :post,
+        "/jobs/job-a/complete",
+        Jason.encode!(%{"result" => "success", "outputs" => %{}})
+      )
+      |> with_bearer(token)
+      |> GatewayHttpServer.call(deps)
+
+    assert resp.status == 200
+  end
+
+  test "POST /jobs/:name/complete runs archive_on_complete only AFTER a successful projection, with the completion's workflow_run/job_key" do
+    test_pid = self()
+
+    deps =
+      base_deps(%{
+        project_status: fn _conn, _wr, _jk, _progress -> {:ok, %{}} end,
+        archive_on_complete: fn conn, workflow_run, job_key ->
+          send(test_pid, {:archived, conn, workflow_run, job_key})
+          {:ok, %{}}
+        end
+      })
+
+    token = valid_token(deps, "runner-1", "job-a")
+
+    resp =
+      conn(
+        :post,
+        "/jobs/job-a/complete",
+        Jason.encode!(%{"result" => "success", "outputs" => %{}})
+      )
+      |> with_bearer(token)
+      |> GatewayHttpServer.call(deps)
+
+    assert resp.status == 200
+    assert_received {:archived, :fake_conn, "job-a", "job-a"}
+  end
+
+  test "POST /jobs/:name/complete never runs archive_on_complete when the projection fails" do
+    test_pid = self()
+
+    deps =
+      base_deps(%{
+        project_status: fn _conn, _wr, _jk, _progress -> {:error, :conflict} end,
+        archive_on_complete: fn _conn, _wr, _jk ->
+          send(test_pid, :archive_touched)
+          {:ok, %{}}
+        end
+      })
+
+    token = valid_token(deps)
+
+    resp =
+      conn(
+        :post,
+        "/jobs/job-a/complete",
+        Jason.encode!(%{"result" => "failed", "outputs" => %{}})
+      )
+      |> with_bearer(token)
+      |> GatewayHttpServer.call(deps)
+
+    assert resp.status == 500
+    refute_received :archive_touched
+  end
+
+  test "POST /jobs/:name/complete surfaces an archive_on_complete failure as 500 (retry-safe: projection already succeeded and is itself idempotent)" do
+    deps =
+      base_deps(%{
+        project_status: fn _conn, _wr, _jk, _progress -> {:ok, %{}} end,
+        archive_on_complete: fn _conn, _wr, _jk -> {:error, :disk_full} end
+      })
+
+    token = valid_token(deps)
+
+    resp =
+      conn(
+        :post,
+        "/jobs/job-a/complete",
+        Jason.encode!(%{"result" => "success", "outputs" => %{}})
+      )
+      |> with_bearer(token)
+      |> GatewayHttpServer.call(deps)
+
+    assert resp.status == 500
+  end
+
+  test "POST /jobs/:name/complete calling archive_on_complete twice for the same job is safe (idempotent hook)" do
+    test_pid = self()
+
+    deps =
+      base_deps(%{
+        project_status: fn _conn, _wr, _jk, _progress -> {:ok, %{}} end,
+        archive_on_complete: fn _conn, _wr, _jk ->
+          send(test_pid, :archived_again)
+          {:ok, %{}}
+        end
+      })
+
+    token = valid_token(deps, "runner-1", "job-a")
+    body = Jason.encode!(%{"result" => "success", "outputs" => %{}})
+
+    resp1 =
+      conn(:post, "/jobs/job-a/complete", body)
+      |> with_bearer(token)
+      |> GatewayHttpServer.call(deps)
+
+    resp2 =
+      conn(:post, "/jobs/job-a/complete", body)
+      |> with_bearer(token)
+      |> GatewayHttpServer.call(deps)
+
+    assert resp1.status == 200
+    assert resp2.status == 200
+    assert_received :archived_again
+    assert_received :archived_again
+  end
+
   # -- real end-to-end over a bound socket -----------------------------------
 
   describe "serve/2 over a real socket" do

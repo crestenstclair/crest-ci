@@ -10,7 +10,10 @@ defmodule CrestCiGateway.GatewayHttpServer do
     * `POST /jobs/:name/ack`        — confirm acquisition
     * `POST /jobs/:name/logs`       — chunk upload
     * `POST /jobs/:name/timeline`   — step status
-    * `POST /jobs/:name/complete`   — result + outputs
+    * `POST /jobs/:name/complete`   — result + outputs; once the result is
+      durably projected, this is also the gateway's job-completion hook for
+      `applicationService.Results.ArchiveOnComplete` (log compaction) —
+      see `deps.archive_on_complete` on `CrestCiGateway.RunnerProtocolHttp.Deps`.
 
   Every job-scoped route authenticates the bearer `RunnerToken` FIRST and
   rejects before touching any collaborator (store, lease arbiter, log
@@ -178,11 +181,36 @@ defmodule CrestCiGateway.GatewayHttpServer do
       progress = %{"kind" => "complete", "result" => body["result"], "outputs" => body["outputs"]}
 
       case deps.project_status.(deps.kube_conn, workflow_run, job_key, progress) do
-        {:ok, _object} -> send_json(conn, 200, %{"status" => "ok"})
+        {:ok, _object} -> archive_on_complete(conn, deps, workflow_run, job_key)
         {:error, _reason} -> send_json(conn, 500, %{"error" => "projection_failed"})
       end
     else
       {:error, _reason} -> send_json(conn, 400, %{"error" => "malformed_body"})
+    end
+  end
+
+  # Runs the `applicationService.Results.ArchiveOnComplete` completion hook
+  # once the job's completion result is durably recorded, so a completed
+  # job's live log chunks are compacted into a durable archive and the
+  # archive pointer is recorded on the job's status. `deps.archive_on_complete`
+  # is optional (`nil` when a gateway replica has not wired log archiving
+  # in yet) — a caller with no archiving configured behaves exactly as
+  # before this hook existed (Open/Closed: nothing here breaks a caller
+  # that never opts in).
+  #
+  # `ArchiveOnComplete.archive/3` is idempotent and always rereads status
+  # fresh before acting, so surfacing its failure as a 500 (prompting the
+  # caller to retry the whole `/complete` request) is safe: a retried
+  # `project_status` call is itself idempotent, and a retried archive
+  # attempt either finds nothing new to do (already archived) or picks up
+  # exactly where a crashed attempt left off.
+  defp archive_on_complete(conn, %{archive_on_complete: nil}, _workflow_run, _job_key),
+    do: send_json(conn, 200, %{"status" => "ok"})
+
+  defp archive_on_complete(conn, deps, workflow_run, job_key) do
+    case deps.archive_on_complete.(deps.kube_conn, workflow_run, job_key) do
+      {:ok, _archive} -> send_json(conn, 200, %{"status" => "ok"})
+      {:error, _reason} -> send_json(conn, 500, %{"error" => "archive_failed"})
     end
   end
 
