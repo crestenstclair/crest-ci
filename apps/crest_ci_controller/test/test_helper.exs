@@ -1,4 +1,3 @@
 Code.require_file("support/fake_kube_client.ex", __DIR__)
-Code.require_file("support/always_conflict_kube_client.ex", __DIR__)
 
 ExUnit.start()
