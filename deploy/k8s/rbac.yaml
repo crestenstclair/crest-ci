@@ -1,0 +1,108 @@
+# deploy/k8s/rbac.yaml
+#
+# Two independent RBAC scopes, matching the two namespaces in namespaces.yaml:
+#
+#   1. crest-runner (namespace-scoped, crest-ci-runners only) — the
+#      ServiceAccount every ephemeral runner Pod mounts. The
+#      actions-runner container-hooks process running inside a runner
+#      Pod needs to create/watch/exec the sibling "job container" Pods
+#      it spins up for `container:`/`services:` steps. Narrow on
+#      purpose: it can never see CRDs, Leases, or anything in
+#      crest-ci-system.
+#
+#   2. crest-ci-controller (cluster-scoped) — the leader-elected control
+#      plane's ServiceAccount. Needs the four ci.crest.dev CRD kinds
+#      (+ status subresources) cluster-wide, Pod create/watch/delete for
+#      RealPodOrchestrator to render RunnerJobs into real Pods in
+#      crest-ci-runners, and coordination.k8s.io Leases for
+#      LeaderElector's compare-and-swap election in crest-ci-system.
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: crest-runner
+  namespace: crest-ci-runners
+  labels:
+    app.kubernetes.io/part-of: crest-ci
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: crest-runner-pod-manager
+  namespace: crest-ci-runners
+  labels:
+    app.kubernetes.io/part-of: crest-ci
+rules:
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: crest-runner-pod-manager-binding
+  namespace: crest-ci-runners
+  labels:
+    app.kubernetes.io/part-of: crest-ci
+subjects:
+  - kind: ServiceAccount
+    name: crest-runner
+    namespace: crest-ci-runners
+roleRef:
+  kind: Role
+  name: crest-runner-pod-manager
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: crest-ci-controller
+  namespace: crest-ci-system
+  labels:
+    app.kubernetes.io/part-of: crest-ci
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: crest-ci-controller
+  labels:
+    app.kubernetes.io/part-of: crest-ci
+rules:
+  - apiGroups: ["ci.crest.dev"]
+    resources:
+      - workflowruns
+      - workflowruns/status
+      - runnerjobs
+      - runnerjobs/status
+      - runnerpools
+      - runnerpools/status
+      - workflowdefinitions
+      - workflowdefinitions/status
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: crest-ci-controller
+  labels:
+    app.kubernetes.io/part-of: crest-ci
+subjects:
+  - kind: ServiceAccount
+    name: crest-ci-controller
+    namespace: crest-ci-system
+roleRef:
+  kind: ClusterRole
+  name: crest-ci-controller
+  apiGroup: rbac.authorization.k8s.io

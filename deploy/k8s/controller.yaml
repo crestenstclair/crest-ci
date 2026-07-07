@@ -1,0 +1,70 @@
+# deploy/k8s/controller.yaml
+#
+# crest-ci-controller: the leader-elected control plane. Three replicas
+# run at all times; only the elected leader (LeaderElector, Lease
+# "crest-ci-controller" in namespace "crest-ci-system" — see
+# apps/crest_ci_controller/lib/crest_ci_controller/leader_elector.ex)
+# reconciles at any moment. The other two stay warm (caches populated,
+# no reconcile loop running) and take over within the configured lease
+# duration + renew margin if the leader is killed, per the HA failover
+# budget. Authoritative state lives only in Kubernetes custom resources,
+# so any replica can be killed and restarted without losing anything —
+# there is no local state to reconstruct.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crest-ci-controller
+  namespace: crest-ci-system
+  labels:
+    app.kubernetes.io/name: crest-ci-controller
+    app.kubernetes.io/part-of: crest-ci
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: crest-ci-controller
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: crest-ci-controller
+        app.kubernetes.io/part-of: crest-ci
+    spec:
+      # Mounts its in-cluster ServiceAccount (rbac.yaml) — no kubeconfig
+      # file, no long-lived token baked into the image. The in-cluster
+      # client derives its ClusterConn from the projected SA token +
+      # the cluster CA already mounted at the conventional path.
+      serviceAccountName: crest-ci-controller
+      containers:
+        - name: controller
+          image: ghcr.io/crest-ci/crest-ci-controller:dev
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: LEASE_NAMESPACE
+              value: "crest-ci-system"
+            - name: LEASE_NAME
+              value: "crest-ci-controller"
+            - name: RUNNER_NAMESPACE
+              value: "crest-ci-runners"
+            - name: RUNNER_SERVICE_ACCOUNT
+              value: "crest-runner"
+            # The ephemeral runner image RealPodOrchestrator/PodSpecBuilder
+            # renders into every RunnerJob's Pod spec — build output name
+            # matches deploy/runner/Dockerfile (asset.RunnerImage).
+            - name: RUNNER_IMAGE
+              value: "ghcr.io/crest-ci/crest-ci-runner:dev"
+            # The address PodSpecBuilder forwards, unchanged, into every
+            # ephemeral runner Pod's env as GATEWAY_URLS — must resolve to
+            # the gateway Service's own in-cluster DNS name (gateway.yaml).
+            - name: GATEWAY_URLS
+              value: "http://crest-ci-gateway.crest-ci-system.svc.cluster.local"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"

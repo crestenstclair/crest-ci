@@ -1,0 +1,107 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: runnerjobs.ci.crest.dev
+spec:
+  group: ci.crest.dev
+  scope: Namespaced
+  names:
+    kind: RunnerJob
+    listKind: RunnerJobList
+    plural: runnerjobs
+    singular: runnerjob
+    shortNames:
+      - rjob
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: RunRef
+          type: string
+          jsonPath: .spec.runRef
+        - name: LeasedBy
+          type: string
+          jsonPath: .status.leasedBy
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            RunnerJob is the queue element a runner executes: an immutable
+            spec (CrestCiContract.RunnerJobSpec) written once at creation
+            with a deterministic name (run ULID + job key; a 409 AlreadyExists
+            on create is treated as success), and a status
+            (CrestCiContract.RunnerJobStatus) arbitrated by resourceVersion
+            compare-and-swap — a RunnerJob is acquired by exactly one runner,
+            ever.
+          properties:
+            spec:
+              type: object
+              required:
+                - jobKey
+                - runRef
+                - runsOn
+              properties:
+                jobKey:
+                  type: string
+                  description: Path of this job within its parent run's plan.
+                runRef:
+                  type: string
+                  description: Parent WorkflowRun's identifier (ref or run ULID).
+                runsOn:
+                  type: array
+                  description: >-
+                    Non-empty list of runner-pool placement labels; a
+                    RunnerJobSpec with no placement information is not a
+                    representable value.
+                  minItems: 1
+                  items:
+                    type: string
+                jobMessage:
+                  type: object
+                  description: >-
+                    Rendered protocol job payload (steps, env, etc.) the
+                    runner executes, opaque to this schema.
+                  x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              required:
+                - phase
+              properties:
+                phase:
+                  type: string
+                  description: >-
+                    Lease/acquisition phase machine
+                    (CrestCiContract.RunnerJobStatus /
+                    CrestCiContract.RunnerJobPhase). An expired lease
+                    transitions to Abandoned via the controller sweeper only,
+                    never silently back to Queued by the gateway.
+                  enum:
+                    - Queued
+                    - Leased
+                    - Acquired
+                    - Completed
+                    - Abandoned
+                  default: Queued
+                leasedBy:
+                  type: string
+                  description: Identity of the gateway/runner holding the lease.
+                leaseExpiresAt:
+                  type: string
+                  description: >-
+                    RFC3339 timestamp; an expiry in the past without an
+                    acquisition heartbeat marks this job Abandoned by the
+                    controller sweeper.
+                acquiredAt:
+                  type: string
+                result:
+                  type: string
+                  description: Terminal result payload once Completed.

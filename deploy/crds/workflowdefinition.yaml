@@ -1,0 +1,95 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: workflowdefinitions.ci.crest.dev
+spec:
+  group: ci.crest.dev
+  scope: Namespaced
+  names:
+    kind: WorkflowDefinition
+    listKind: WorkflowDefinitionList
+    plural: workflowdefinitions
+    singular: workflowdefinition
+    shortNames:
+      - wfd
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Name
+          type: string
+          jsonPath: .spec.name
+        - name: Parsed
+          type: boolean
+          jsonPath: .status.parsed
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            WorkflowDefinition holds a raw GitHub Actions workflow YAML
+            source, parsed at the engine tier into
+            CrestCiController.Engine.WorkflowDefinition (name/on/env/jobs/
+            rawYaml). This slice reads workflowYaml directly off a
+            WorkflowRun's spec wire map at first reconcile
+            (CrestCiController.PlanFromDefinition) rather than through this
+            kind, so it is registered (MockK8s.KubeApiHttp.Kinds) ahead of
+            a future resource that stores/reuses definitions by name;
+            free-form subtrees are preserved unknown-fields.
+          properties:
+            spec:
+              type: object
+              required:
+                - rawYaml
+              properties:
+                name:
+                  type: string
+                  description: Workflow name, or absent if the YAML omits name.
+                rawYaml:
+                  type: string
+                  description: Original raw workflow YAML text.
+                on:
+                  type: object
+                  description: Raw trigger block, shape varies by trigger type.
+                  x-kubernetes-preserve-unknown-fields: true
+                env:
+                  type: object
+                  description: Workflow-level environment variables.
+                  additionalProperties:
+                    type: string
+                jobs:
+                  type: object
+                  description: >-
+                    Raw decoded job bodies keyed by job id; per-job
+                    validation happens at the engine tier.
+                  x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              properties:
+                parsed:
+                  type: boolean
+                  description: >-
+                    True once WorkflowParser.parse/1 has successfully
+                    built a CrestCiController.Engine.WorkflowDefinition
+                    from rawYaml.
+                  default: false
+                jobCount:
+                  type: integer
+                  minimum: 0
+                  default: 0
+                warnings:
+                  type: array
+                  description: >-
+                    Unknown top-level keys tolerated during parsing
+                    (CrestCiController.Engine.WorkflowDefinition.warning/0);
+                    unknown keys are retained as warnings, never errors.
+                  items:
+                    type: string
+                parseError:
+                  type: string
+                  description: Structured parse failure reason, if any.

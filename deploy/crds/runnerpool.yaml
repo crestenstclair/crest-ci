@@ -1,0 +1,82 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: runnerpools.ci.crest.dev
+spec:
+  group: ci.crest.dev
+  scope: Namespaced
+  names:
+    kind: RunnerPool
+    listKind: RunnerPoolList
+    plural: runnerpools
+    singular: runnerpool
+    shortNames:
+      - rpool
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Replicas
+          type: integer
+          jsonPath: .spec.replicas
+        - name: Ready
+          type: integer
+          jsonPath: .status.readyReplicas
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            RunnerPool declares a pool of runners matching a set of
+            placement labels — the same labels a RunnerJobSpec.runsOn
+            selector is matched against when the gateway routes a queued
+            job to a runner. No CrestCiContract struct models this kind yet
+            in this slice (it is registered in MockK8s.KubeApiHttp.Kinds
+            only); free-form subtrees are preserved unknown-fields so a
+            future contract value object can extend this schema without an
+            API break.
+          properties:
+            spec:
+              type: object
+              required:
+                - labels
+              properties:
+                labels:
+                  type: object
+                  description: >-
+                    Non-empty placement label set this pool advertises;
+                    matched against a RunnerJobSpec.runsOn selector.
+                  additionalProperties:
+                    type: string
+                replicas:
+                  type: integer
+                  description: Desired number of runners in this pool.
+                  minimum: 0
+                  default: 1
+                image:
+                  type: string
+                  description: Runner container image reference.
+                template:
+                  type: object
+                  description: Free-form runner pod template overrides.
+                  x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              properties:
+                readyReplicas:
+                  type: integer
+                  minimum: 0
+                  default: 0
+                availableReplicas:
+                  type: integer
+                  minimum: 0
+                  default: 0
+                observedGeneration:
+                  type: integer
+                  minimum: 0
+                  default: 0

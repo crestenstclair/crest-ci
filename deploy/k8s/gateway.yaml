@@ -1,0 +1,80 @@
+# deploy/k8s/gateway.yaml
+#
+# crest-ci-gateway: active-active — any replica serves any runner at any
+# moment, because session identity and job assignment are re-derivable
+# from custom resources plus stateless signed tokens, and replica-local
+# state is limited to open long-poll connections. Two replicas behind one
+# Service is enough to prove a runner reconnecting after a replica dies
+# is indistinguishable from staying on the same one.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: crest-ci-gateway
+  namespace: crest-ci-system
+  labels:
+    app.kubernetes.io/name: crest-ci-gateway
+    app.kubernetes.io/part-of: crest-ci
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: crest-ci-gateway
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: crest-ci-gateway
+        app.kubernetes.io/part-of: crest-ci
+    spec:
+      containers:
+        - name: gateway
+          image: ghcr.io/crest-ci/crest-ci-gateway:dev
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 4000
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: GATEWAY_PORT
+              value: "4000"
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+---
+# The Service every runner Pod dials over real cluster networking. Its
+# in-cluster DNS name (crest-ci-gateway.crest-ci-system.svc.cluster.local)
+# is exactly the value controller.yaml supplies to GATEWAY_URLS, which
+# PodSpecBuilder forwards unchanged into every ephemeral runner Pod's env
+# — kube-proxy load-balances across whichever gateway replicas are up, so
+# a runner reconnecting after a replica dies just lands on another one.
+# NodePort so a manual `make k3d-up` cluster (deploy/k3d/cluster.yaml's
+# host port mappings 8080->30080 / 8443->30443) can reach it without
+# extra port-forwarding; a real cluster would normally front this with a
+# LoadBalancer/Ingress instead.
+apiVersion: v1
+kind: Service
+metadata:
+  name: crest-ci-gateway
+  namespace: crest-ci-system
+  labels:
+    app.kubernetes.io/name: crest-ci-gateway
+    app.kubernetes.io/part-of: crest-ci
+spec:
+  type: NodePort
+  selector:
+    app.kubernetes.io/name: crest-ci-gateway
+  ports:
+    - name: http
+      port: 80
+      targetPort: 4000
+      nodePort: 30080
+    - name: runner
+      port: 443
+      targetPort: 4000
+      nodePort: 30443

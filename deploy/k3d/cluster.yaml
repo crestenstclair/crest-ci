@@ -1,0 +1,72 @@
+# deploy/k3d/cluster.yaml
+#
+# k3d cluster config for the crest-ci real-cluster manual lifecycle
+# (`make k3d-up` / `make k3d-load` / `make k3d-down` / `make k3d-status`).
+#
+# This is a MANUAL, out-of-gate target. `mix test` and the root Makefile's
+# default/test/check/demo-e2e targets never read this file or shell out to
+# docker/k3d — the whole system boots against the in-repo mock Kubernetes
+# API server for the test gate. This config only matters when a human runs
+# `make k3d-up` to stand up a real cluster.
+#
+# Reference: https://k3d.io/v5.6/usage/configfile/ (k3d.io/v1alpha5, kind: Simple)
+apiVersion: k3d.io/v1alpha5
+kind: Simple
+metadata:
+  name: crest-ci
+
+# One server node — this is a laptop-scale dev cluster, not an HA control
+# plane exercise. HA/failover semantics for crest-ci's own controller and
+# gateway are validated in-BEAM against the mock Kubernetes API server;
+# this cluster only needs to be reachable and stable enough to host the
+# real runner image manually.
+servers: 1
+
+# Agents are memory-capped so a laptop can run the whole thing alongside
+# everything else. Two agents is enough to demonstrate real Pod scheduling
+# without starving the host.
+agents: 2
+
+image: rancher/k3s:v1.30.4-k3s1
+
+network: crest-ci
+
+# A built-in registry so `make k3d-load` can push the runner image without
+# a remote registry round-trip. Reachable from the host at localhost:5500
+# and from in-cluster Pods at crest-ci-registry:5000.
+registries:
+  create:
+    name: crest-ci-registry
+    host: "0.0.0.0"
+    hostPort: "5500"
+
+# Host port mappings so the crest-ci-gateway Service (a NodePort/LoadBalancer
+# Service in deploy/k8s) is reachable from the host without extra port-forwarding.
+ports:
+  - port: 8080:30080
+    nodeFilters:
+      - loadbalancer
+  # Gateway long-poll runner registration/heartbeat endpoint, exposed
+  # separately from the general gateway ingress port above.
+  - port: 8443:30443
+    nodeFilters:
+      - loadbalancer
+
+options:
+  k3d:
+    wait: true
+    timeout: "120s"
+    disableLoadbalancer: false
+  k3s:
+    extraArgs:
+      # Traefik is not needed for this slice; the gateway Service is exposed
+      # directly via the NodePort/host port mappings above.
+      - arg: --disable=traefik
+        nodeFilters:
+          - server:*
+  runtime:
+    # Memory caps on the agent nodes so a real cluster stays laptop-sized.
+    # (k3d >= 5.6 supports --agents-memory / --servers-memory; mirrored here
+    # for anyone reproducing this cluster by hand.)
+    agentsMemory: "1536Mi"
+    serversMemory: "1024Mi"

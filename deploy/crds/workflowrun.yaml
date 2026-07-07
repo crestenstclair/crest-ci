@@ -1,0 +1,167 @@
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  name: workflowruns.ci.crest.dev
+spec:
+  group: ci.crest.dev
+  scope: Namespaced
+  names:
+    kind: WorkflowRun
+    listKind: WorkflowRunList
+    plural: workflowruns
+    singular: workflowrun
+    shortNames:
+      - wfr
+  versions:
+    - name: v1alpha1
+      served: true
+      storage: true
+      subresources:
+        status: {}
+      additionalPrinterColumns:
+        - name: Phase
+          type: string
+          jsonPath: .status.phase
+        - name: Repo
+          type: string
+          jsonPath: .spec.repo
+        - name: Sha
+          type: string
+          jsonPath: .spec.sha
+        - name: Age
+          type: date
+          jsonPath: .metadata.creationTimestamp
+      schema:
+        openAPIV3Schema:
+          type: object
+          description: >-
+            WorkflowRun is the immutable "what to run" resource: the
+            repository/ref/sha being built, plus the pre-expanded job DAG
+            (CrestCiContract.WorkflowRunSpec / .WorkflowRunStatus).
+          properties:
+            spec:
+              type: object
+              required:
+                - repo
+                - ref
+                - sha
+              properties:
+                repo:
+                  type: string
+                  description: Repository this run builds.
+                ref:
+                  type: string
+                  description: Git ref (branch/tag) that resolved to sha.
+                sha:
+                  type: string
+                  description: Commit sha being built.
+                concurrencyKey:
+                  type: string
+                  description: >-
+                    Optional key used to serialize overlapping runs sharing
+                    the same key. Defaults to "" (no serialization).
+                  default: ""
+                placement:
+                  type: object
+                  description: Optional free-form placement hint map.
+                  x-kubernetes-preserve-unknown-fields: true
+                workflowYaml:
+                  type: string
+                  description: >-
+                    Optional raw workflow YAML text. When present and
+                    plan/status.plan are both empty, the controller engine
+                    expands it into a plan exactly once
+                    (CrestCiController.PlanFromDefinition).
+                plan:
+                  type: array
+                  description: >-
+                    Pre-expanded job DAG (CrestCiContract.PlanJob list). Each
+                    entry's key must be unique within the plan.
+                  items:
+                    type: object
+                    required:
+                      - key
+                    properties:
+                      key:
+                        type: string
+                      displayName:
+                        type: string
+                      needs:
+                        type: array
+                        items:
+                          type: string
+                      runsOn:
+                        type: array
+                        items:
+                          type: string
+                      steps:
+                        type: array
+                        items:
+                          type: object
+                          x-kubernetes-preserve-unknown-fields: true
+            status:
+              type: object
+              properties:
+                phase:
+                  type: string
+                  description: >-
+                    Pure derivation of the job phases in jobs
+                    (CrestCiContract.WorkflowRunPhase). Terminal phases
+                    (Succeeded/Failed/Cancelled) are absorbing.
+                  enum:
+                    - Pending
+                    - Queued
+                    - Running
+                    - Succeeded
+                    - Failed
+                    - Cancelled
+                  default: Pending
+                jobs:
+                  type: object
+                  description: >-
+                    Per-job execution records keyed by JobKey
+                    (CrestCiContract.JobStatus).
+                  additionalProperties:
+                    type: object
+                    required:
+                      - phase
+                    properties:
+                      phase:
+                        type: string
+                        enum:
+                          - Waiting
+                          - Queued
+                          - Assigned
+                          - Running
+                          - Succeeded
+                          - Failed
+                          - Cancelled
+                          - Skipped
+                      assignedRunner:
+                        type: string
+                      queuedAt:
+                        type: string
+                      startedAt:
+                        type: string
+                      finishedAt:
+                        type: string
+                      logChunks:
+                        type: integer
+                        minimum: 0
+                      outputs:
+                        type: object
+                        additionalProperties:
+                          type: string
+                plan:
+                  type: array
+                  description: >-
+                    Engine-derived job DAG for a workflowYaml-driven run,
+                    populated at most once via WorkflowRunStatus.put_plan/2.
+                  items:
+                    type: object
+                    x-kubernetes-preserve-unknown-fields: true
+                planError:
+                  type: string
+                  description: >-
+                    Structured plan-expansion failure reason, set via
+                    WorkflowRunStatus.mark_plan_failed/2.

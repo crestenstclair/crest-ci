@@ -1,0 +1,29 @@
+# deploy/k8s/namespaces.yaml
+#
+# The two namespaces the real-cluster control plane targets:
+#   - crest-ci-system:  the controller + gateway control plane (Deployments,
+#     the coordination.k8s.io Lease LeaderElector arbitrates over, the
+#     gateway Service).
+#   - crest-ci-runners: ephemeral runner Pods only (RealPodOrchestrator
+#     creates exactly one Pod per RunnerJob here; nothing else lives in
+#     this namespace).
+#
+# Kept separate so the crest-runner ServiceAccount's RBAC (rbac.yaml) can
+# stay scoped to crest-ci-runners alone — a compromised runner Pod's
+# container-hooks process can never see the control plane's CRDs, Leases,
+# or the other namespace's Pods.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: crest-ci-system
+  labels:
+    app.kubernetes.io/part-of: crest-ci
+    app.kubernetes.io/managed-by: crest-ci-deploy
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: crest-ci-runners
+  labels:
+    app.kubernetes.io/part-of: crest-ci
+    app.kubernetes.io/managed-by: crest-ci-deploy
