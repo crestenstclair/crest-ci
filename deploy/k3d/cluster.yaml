@@ -68,5 +68,5 @@ options:
     # Memory caps on the agent nodes so a real cluster stays laptop-sized.
     # (k3d >= 5.6 supports --agents-memory / --servers-memory; mirrored here
     # for anyone reproducing this cluster by hand.)
-    agentsMemory: "1536Mi"
-    serversMemory: "1024Mi"
+    agentsMemory: "1536m"
+    serversMemory: "1024m"
